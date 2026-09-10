@@ -1,6 +1,9 @@
 use anyhow::Result;
 use log::error;
-use rbx_dom_weak::{types::Tags, ustr, HashMapExt, Ustr, UstrMap};
+use rbx_dom_weak::{
+	types::{Tags, Variant},
+	ustr, HashMapExt, Ustr, UstrMap,
+};
 use serde::{Deserialize, Serialize};
 use std::{
 	collections::{BTreeMap, HashMap},
@@ -8,7 +11,7 @@ use std::{
 };
 
 use crate::{
-	core::meta::Meta,
+	core::{meta::Meta, refs::RefPath},
 	ext::PathExt,
 	middleware::helpers,
 	resolution::UnresolvedValue,
@@ -39,6 +42,7 @@ pub struct DataSnapshot {
 	pub path: PathBuf,
 	pub class: Option<Ustr>,
 	pub properties: Properties,
+	pub refs: UstrMap<RefPath>,
 	pub keep_unknowns: Option<bool>,
 	pub original_name: Option<String>,
 	pub mesh_source: Option<String>,
@@ -55,6 +59,7 @@ pub fn read_data(path: &Path, class: Option<&str>, vfs: &Vfs) -> Result<DataSnap
 	let data: Data = serde_json::from_str(&data)?;
 
 	let mut properties = UstrMap::new();
+	let mut refs = UstrMap::new();
 
 	let class = if let Some(class) = class.or(data.class_name.as_deref()) {
 		class.to_owned()
@@ -76,6 +81,14 @@ pub fn read_data(path: &Path, class: Option<&str>, vfs: &Vfs) -> Result<DataSnap
 
 	// Resolve properties
 	for (property, value) in data.properties {
+		// References point at an instance that often lives in another
+		// file, so they are kept as paths and resolved once the whole
+		// tree is available
+		if let Some(path) = value.to_ref_path(&class, &property) {
+			refs.insert(property, path);
+			continue;
+		}
+
 		match value.resolve(&class, &property) {
 			Ok(value) => {
 				properties.insert(property, value);
@@ -113,6 +126,7 @@ pub fn read_data(path: &Path, class: Option<&str>, vfs: &Vfs) -> Result<DataSnap
 		path: path.to_owned(),
 		class: data.class_name,
 		properties,
+		refs,
 		keep_unknowns: data.keep_unknowns,
 		original_name: data.original_name,
 		mesh_source,
@@ -150,6 +164,9 @@ pub fn write_data<'a>(
 
 	let properties = properties
 		.iter()
+		// References that `core::refs::to_paths` could not describe are
+		// dropped, as a raw referent would mean nothing in another session
+		.filter(|(_, variant)| !matches!(variant, Variant::Ref(_)))
 		.map(|(property, variant)| {
 			(
 				*property,

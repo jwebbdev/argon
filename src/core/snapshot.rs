@@ -114,6 +114,8 @@ impl Snapshot {
 			self.meta.set_mesh_source(Some(mesh_source));
 		}
 
+		self.meta.refs.extend(data.refs);
+
 		self.extend_properties(data.properties);
 		self.meta.source.add_data(&data.path);
 	}

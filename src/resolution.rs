@@ -11,7 +11,7 @@ use rbx_reflection::{DataType, PropertyDescriptor};
 use serde::{ser::SerializeSeq, Deserialize, Serialize, Serializer};
 use std::{borrow::Borrow, collections::HashMap, fmt::Write};
 
-use crate::{ext::PropertyDescriptorExt, util::get_reflection_database};
+use crate::{core::refs::RefPath, ext::PropertyDescriptorExt, util::get_reflection_database};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -33,6 +33,20 @@ impl UnresolvedValue {
 			UnresolvedValue::FullyQualified(full) => Ok(full),
 			UnresolvedValue::Ambiguous(partial) => partial.resolve_unambiguous(),
 		}
+	}
+
+	/// Returns the path of the instance this value points at, when the
+	/// property it belongs to holds a reference to another instance
+	///
+	/// References cannot be turned into a value on their own, as the
+	/// instance they point at usually lives in a different file that
+	/// might not have been read yet, so they are resolved separately
+	pub fn to_ref_path(&self, class: &str, property: &str) -> Option<RefPath> {
+		if !is_ref(class, property) {
+			return None;
+		}
+
+		RefPath::parse(self.as_str()?)
 	}
 
 	pub fn as_str(&self) -> Option<&str> {
@@ -213,9 +227,9 @@ impl UnresolvedValue {
 				rect.max.x as f64,
 				rect.max.y as f64,
 			]),
-			// TODO: Implement Ref
-			// Variant::Ref(reference) => AmbiguousValue::
-			//
+			// References are turned into the path of the instance they
+			// point at by `core::refs::to_paths` before they get here,
+			// as describing them requires the whole tree
 			Variant::Region3(region) => AmbiguousValue::Array3Array2([
 				[region.min.x as f64, region.min.y as f64, region.min.z as f64],
 				[region.max.x as f64, region.max.y as f64, region.max.z as f64],
@@ -477,9 +491,15 @@ impl AmbiguousValue {
 					Vector2::new(rect[2] as f32, rect[3] as f32),
 				)
 				.into()),
-				// TODO: Implement Ref
-				// (VariantType::Ref, AmbiguousValue::String(path)) => Ok(),
-				//
+
+				// References are the one property that cannot be resolved
+				// here, as the instance they point at is usually read from
+				// another file entirely. `UnresolvedValue::to_ref_path`
+				// takes them out before they ever get this far
+				(VariantType::Ref, AmbiguousValue::String(path)) => {
+					bail!("Reference to {path} must be resolved against the tree, not on its own")
+				}
+
 				(VariantType::Region3, AmbiguousValue::Array3Array2(region)) => Ok(Region3::new(
 					Vector3::new(region[0][0] as f32, region[0][1] as f32, region[0][2] as f32),
 					Vector3::new(region[1][0] as f32, region[1][1] as f32, region[1][2] as f32),
@@ -562,6 +582,13 @@ impl AmbiguousValue {
 			AmbiguousValue::Object(_) => "a generic object",
 		}
 	}
+}
+
+/// Tells whether the given property holds a reference to another
+/// instance, which files store as a path and the client sends as an id
+pub fn is_ref(class: &str, property: &str) -> bool {
+	find_descriptor(class, property)
+		.is_some_and(|descriptor| matches!(descriptor.data_type, DataType::Value(VariantType::Ref)))
 }
 
 fn find_descriptor(class: &str, property: &str) -> Option<&'static PropertyDescriptor<'static>> {

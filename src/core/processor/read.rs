@@ -7,6 +7,7 @@ use crate::{
 	core::{
 		changes::Changes,
 		meta::SourceKind,
+		refs,
 		snapshot::{Snapshot, UpdatedSnapshot},
 		tree::Tree,
 	},
@@ -60,6 +61,12 @@ pub fn process_changes(id: Ref, tree: &mut Tree, vfs: &Vfs) -> Option<Changes> {
 	} else {
 		tree.remove_instance(id);
 		changes.remove(id);
+	}
+
+	// Instances that point at other instances can only be resolved once
+	// every file involved has been read, which is now
+	for update in refs::resolve_all(tree) {
+		changes.update(update);
 	}
 
 	Some(changes)

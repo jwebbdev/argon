@@ -2,7 +2,7 @@ use log::error;
 use multimap::MultiMap;
 use rbx_dom_weak::{types::Ref, Instance, InstanceBuilder, WeakDom};
 use std::{
-	collections::HashMap,
+	collections::{HashMap, HashSet},
 	path::{Path, PathBuf},
 };
 
@@ -13,6 +13,9 @@ pub struct Tree {
 	dom: WeakDom,
 	path_to_ids: MultiMap<PathBuf, Ref>,
 	id_to_meta: HashMap<Ref, Meta>,
+	// Instances whose meta holds at least one reference path, so that
+	// resolving them does not have to walk the entire tree every time
+	ids_with_refs: HashSet<Ref>,
 }
 
 impl Tree {
@@ -25,6 +28,7 @@ impl Tree {
 			dom: WeakDom::new(builder),
 			id_to_meta: HashMap::new(),
 			path_to_ids: MultiMap::new(),
+			ids_with_refs: HashSet::new(),
 		};
 
 		let root_ref = tree.dom.root_ref();
@@ -116,6 +120,8 @@ impl Tree {
 			self.path_to_ids.insert(path.to_owned(), id);
 		}
 
+		self.track_refs(id, &meta);
+
 		self.id_to_meta.insert(id, meta)
 	}
 
@@ -146,6 +152,7 @@ impl Tree {
 			}
 		}
 
+		self.track_refs(id, &meta);
 		self.id_to_meta.insert(id, meta);
 
 		old_meta
@@ -160,7 +167,21 @@ impl Tree {
 			}
 		}
 
+		self.ids_with_refs.remove(&id);
+
 		meta
+	}
+
+	fn track_refs(&mut self, id: Ref, meta: &Meta) {
+		if meta.refs.is_empty() {
+			self.ids_with_refs.remove(&id);
+		} else {
+			self.ids_with_refs.insert(id);
+		}
+	}
+
+	pub fn ids_with_refs(&self) -> &HashSet<Ref> {
+		&self.ids_with_refs
 	}
 
 	pub fn get_meta(&self, id: Ref) -> Option<&Meta> {

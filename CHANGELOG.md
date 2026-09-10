@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Support for properties that reference other instances, such as `Model.PrimaryPart`, `Beam.Attachment0` or `WeldConstraint.Part0`, which files store as the path of the instance they point at
+
 ### Fixed
 
 - File system events that arrived while Argon was writing to the file system no longer get dropped
