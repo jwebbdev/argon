@@ -513,3 +513,55 @@ mod ambiguous_names {
 		assert_eq!(path.resolve(&tree, link), Some(target));
 	}
 }
+
+// An instance can name itself for others to point at no matter which kind of
+// file it lives in
+mod ids_in_every_file {
+	use argon::{
+		middleware::{data::read_data, json_model::read_json_model},
+		vfs::Vfs,
+	};
+	use std::{env, fs, path::PathBuf};
+
+	fn write_temp(name: &str, contents: &str) -> PathBuf {
+		let path = env::temp_dir().join(name);
+		fs::write(&path, contents).unwrap();
+
+		path
+	}
+
+	#[test]
+	fn a_json_model_can_name_itself() {
+		let path = write_temp(
+			"argon-refs-id-model.model.json",
+			r#"{
+				"className": "Model",
+				"id": "rig",
+				"children": [{ "className": "Part", "name": "Root", "id": "rig-root" }]
+			}"#,
+		);
+
+		let snapshot = read_json_model(&path, &Vfs::new(false)).unwrap();
+		fs::remove_file(&path).ok();
+
+		assert_eq!(snapshot.meta.id.as_deref(), Some("rig"));
+		assert_eq!(
+			snapshot.children[0].meta.id.as_deref(),
+			Some("rig-root"),
+			"a child of a model file has to be nameable too"
+		);
+	}
+
+	#[test]
+	fn a_data_file_can_name_itself() {
+		let path = write_temp(
+			"argon-refs-id-data.data.json",
+			r#"{ "className": "Part", "id": "rig-root" }"#,
+		);
+
+		let data = read_data(&path, None, &Vfs::new(false)).unwrap();
+		fs::remove_file(&path).ok();
+
+		assert_eq!(data.id.as_deref(), Some("rig-root"));
+	}
+}

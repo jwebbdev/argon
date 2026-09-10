@@ -14,6 +14,9 @@ struct JsonModel {
 	name: Option<String>,
 	#[serde(alias = "ClassName")]
 	class_name: Option<Ustr>,
+	/// Name that this instance gives itself for others to point at
+	#[serde(alias = "Id")]
+	id: Option<String>,
 
 	#[serde(alias = "Properties")]
 	properties: Option<UstrMap<UnresolvedValue>>,
@@ -97,6 +100,7 @@ fn walk(model: JsonModel, path: &Path) -> Result<Snapshot> {
 	}
 
 	snapshot.set_properties(properties);
+	snapshot.meta.set_id(model.id);
 
 	// Append children
 	for child in model.children.unwrap_or_default() {
