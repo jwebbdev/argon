@@ -132,6 +132,12 @@ impl RefPath {
 					current = tree.get_instance(current)?.parent();
 				}
 
+				// Walking past the root lands on the parent of it, which
+				// is no instance at all
+				if current.is_none() {
+					return None;
+				}
+
 				(current, down)
 			}
 		};

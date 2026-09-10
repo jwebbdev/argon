@@ -138,6 +138,16 @@ mod ref_path {
 	}
 
 	#[test]
+	fn path_that_walks_onto_the_root_itself_points_at_nothing() {
+		let tree = tree();
+		let lighting = find(&tree, &["Lighting"]);
+
+		let path = RefPath::parse("^^").unwrap();
+
+		assert_eq!(path.resolve(&tree, lighting), None);
+	}
+
+	#[test]
 	fn path_between_two_instances_stays_relative() {
 		let tree = tree();
 
