@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- File system events that arrived while Argon was writing to the file system no longer get dropped
+
 ## [2.0.29] - 2026-05-18
 
 ### Added

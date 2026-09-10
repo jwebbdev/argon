@@ -3,9 +3,10 @@ use log::trace;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use notify_debouncer_full::{new_debouncer, DebouncedEvent, Debouncer, FileIdMap};
 use std::{
+	collections::HashMap,
 	io::{self, Result},
-	path::Path,
-	sync::{mpsc, Arc, RwLock},
+	path::{Path, PathBuf},
+	sync::{mpsc, Arc, Mutex, RwLock},
 	thread::Builder,
 	time::{Duration, Instant},
 };
@@ -17,13 +18,10 @@ use notify::event::DataChange;
 use notify::event::ModifyKind;
 
 #[cfg(target_os = "linux")]
-use {
-	notify::event::{AccessKind, AccessMode, RenameMode},
-	std::path::PathBuf,
-};
+use notify::event::{AccessKind, AccessMode, RenameMode};
 
 use super::VfsEvent;
-use crate::constants::SYNCBACK_DEBOUNCE_TIME;
+use crate::{constants::SYNCBACK_DEBOUNCE_TIME, lock};
 
 #[cfg(target_os = "linux")]
 const DEBOUNCE_TIME: Duration = Duration::from_micros(500);
@@ -40,9 +38,42 @@ struct DebounceContext {
 	path: PathBuf,
 }
 
+/// Paths that Argon itself has just written, mapped to the time of
+/// the write. The file system events they trigger are only echoes of
+/// changes the client already knows about, so they must not be synced
+/// back. Unlike a blanket time window this drops the exact paths we
+/// wrote and nothing else, so user changes are never lost
+#[derive(Default)]
+struct EchoMap {
+	inner: HashMap<PathBuf, Instant>,
+}
+
+impl EchoMap {
+	/// Remembers `path` as written by Argon so the event it causes
+	/// can later be recognized as an echo
+	fn record(&mut self, path: &Path) {
+		self.sweep();
+		self.inner.insert(path.to_owned(), Instant::now());
+	}
+
+	/// Returns `true` if `path` was written by Argon recently enough
+	/// for the event to be an echo, consuming the entry that matched
+	fn consume(&mut self, path: &Path) -> bool {
+		self.sweep();
+		self.inner.remove(path).is_some()
+	}
+
+	/// Forgets entries that are too old to be echoes, so the map stays
+	/// bounded even when the events we expected never arrive
+	fn sweep(&mut self) {
+		self.inner.retain(|_, time| time.elapsed() < SYNCBACK_DEBOUNCE_TIME);
+	}
+}
+
 pub struct VfsDebouncer {
 	inner: Debouncer<RecommendedWatcher, FileIdMap>,
-	pause_state: Arc<RwLock<(bool, Instant)>>,
+	is_paused: Arc<RwLock<bool>>,
+	echoes: Arc<Mutex<EchoMap>>,
 	receiver: Receiver<VfsEvent>,
 }
 
@@ -53,8 +84,11 @@ impl VfsDebouncer {
 
 		let debouncer = new_debouncer(Duration::from_millis(100), None, inner_sender, false).unwrap();
 
-		let pause_state = Arc::new(RwLock::new((false, Instant::now())));
-		let local_pause_state = pause_state.clone();
+		let is_paused = Arc::new(RwLock::new(false));
+		let local_is_paused = is_paused.clone();
+
+		let echoes = Arc::new(Mutex::new(EchoMap::default()));
+		let local_echoes = echoes.clone();
 
 		Builder::new()
 			.name("debouncer".into())
@@ -66,9 +100,7 @@ impl VfsDebouncer {
 				};
 
 				for events in inner_receiver {
-					let (is_paused, timestamp) = *local_pause_state.read().unwrap();
-
-					if is_paused || timestamp.elapsed() < SYNCBACK_DEBOUNCE_TIME {
+					if *local_is_paused.read().unwrap() {
 						continue;
 					}
 
@@ -76,12 +108,17 @@ impl VfsDebouncer {
 						trace!("Debouncing event, paths: {:?}, kind: {:?}", event.paths, event.kind);
 
 						#[cfg(not(target_os = "linux"))]
-						if let Some(event) = debounce(&event) {
-							sender.send(event).unwrap();
-						}
+						let event = debounce(&event);
 
 						#[cfg(target_os = "linux")]
-						if let Some(event) = debounce(&event, &mut context) {
+						let event = debounce(&event, &mut context);
+
+						if let Some(event) = event {
+							if lock!(local_echoes).consume(event.path()) {
+								trace!("Skipping event, {:?} was written by us", event.path());
+								continue;
+							}
+
 							sender.send(event).unwrap();
 						}
 					}
@@ -91,7 +128,8 @@ impl VfsDebouncer {
 
 		Self {
 			inner: debouncer,
-			pause_state,
+			is_paused,
+			echoes,
 			receiver,
 		}
 	}
@@ -116,12 +154,18 @@ impl VfsDebouncer {
 		Ok(())
 	}
 
+	/// Marks `path` as written by Argon, so that the event it triggers
+	/// gets skipped instead of being synced back to the client
+	pub fn record(&self, path: &Path) {
+		lock!(self.echoes).record(path);
+	}
+
 	pub fn pause(&mut self) {
-		*self.pause_state.write().unwrap() = (true, Instant::now());
+		*self.is_paused.write().unwrap() = true;
 	}
 
 	pub fn resume(&mut self) {
-		*self.pause_state.write().unwrap() = (false, Instant::now());
+		*self.is_paused.write().unwrap() = false;
 	}
 
 	pub fn receiver(&self) -> Receiver<VfsEvent> {
@@ -216,5 +260,75 @@ fn debounce(event: &DebouncedEvent) -> Option<VfsEvent> {
 		EventKind::Remove(_) => Some(VfsEvent::Delete(event_path!(event))),
 		EventKind::Modify(_) => Some(VfsEvent::Write(event_path!(event))),
 		_ => None,
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::EchoMap;
+	use crate::constants::SYNCBACK_DEBOUNCE_TIME;
+	use std::{path::PathBuf, thread, time::Duration};
+
+	fn expire() {
+		thread::sleep(SYNCBACK_DEBOUNCE_TIME + Duration::from_millis(50));
+	}
+
+	#[test]
+	fn echo_within_ttl_is_dropped() {
+		let mut echoes = EchoMap::default();
+		let path = PathBuf::from("src/init.luau");
+
+		echoes.record(&path);
+
+		assert!(echoes.consume(&path));
+	}
+
+	#[test]
+	fn echo_is_dropped_only_once() {
+		let mut echoes = EchoMap::default();
+		let path = PathBuf::from("src/init.luau");
+
+		echoes.record(&path);
+
+		assert!(echoes.consume(&path));
+		assert!(!echoes.consume(&path));
+	}
+
+	#[test]
+	fn echo_after_ttl_is_not_dropped() {
+		let mut echoes = EchoMap::default();
+		let path = PathBuf::from("src/init.luau");
+
+		echoes.record(&path);
+		expire();
+
+		assert!(!echoes.consume(&path));
+	}
+
+	#[test]
+	fn unrelated_path_is_never_dropped() {
+		let mut echoes = EchoMap::default();
+
+		echoes.record(&PathBuf::from("src/init.luau"));
+
+		assert!(!echoes.consume(&PathBuf::from("src/other.luau")));
+		// Recording one path must not suppress its parent either
+		assert!(!echoes.consume(&PathBuf::from("src")));
+	}
+
+	#[test]
+	fn expired_entries_are_evicted() {
+		let mut echoes = EchoMap::default();
+
+		for index in 0..100 {
+			echoes.record(&PathBuf::from(format!("src/{index}.luau")));
+		}
+
+		assert_eq!(echoes.inner.len(), 100);
+
+		expire();
+		echoes.record(&PathBuf::from("src/init.luau"));
+
+		assert_eq!(echoes.inner.len(), 1);
 	}
 }

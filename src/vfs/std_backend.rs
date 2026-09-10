@@ -50,18 +50,26 @@ impl VfsBackend for StdBackend {
 	}
 
 	fn write(&mut self, path: &Path, contents: &[u8]) -> Result<()> {
+		self.debouncer.record(path);
+
 		fs::write(path, contents)
 	}
 
 	fn create_dir(&mut self, path: &Path) -> Result<()> {
+		self.debouncer.record(path);
+
 		fs::create_dir_all(path)
 	}
 
 	fn rename(&mut self, from: &Path, to: &Path) -> Result<()> {
+		self.debouncer.record(from);
+		self.debouncer.record(to);
+
 		fs::rename(from, to)
 	}
 
 	fn remove(&mut self, path: &Path) -> Result<()> {
+		self.debouncer.record(path);
 		self.unwatch(path)?;
 
 		if Config::new().move_to_bin {
