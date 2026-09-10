@@ -340,6 +340,50 @@ pub fn apply_addition(snapshot: AddedSnapshot, tree: &mut Tree, vfs: &Vfs) -> Re
 	Ok(())
 }
 
+/// Rewrites the files of every instance whose reference is described
+/// by a path that no longer leads to the instance it points at
+///
+/// References survive on disk as the path of their target, so renaming
+/// or moving an instance leaves every file pointing at it holding a
+/// path that leads nowhere. Paths that could not be resolved in the
+/// first place are left alone, as they are the ones a person wrote by
+/// hand and got wrong, which is theirs to fix
+pub fn refresh_refs(tree: &mut Tree, vfs: &Vfs) -> Result<()> {
+	let stale: Vec<Ref> = tree
+		.ids_with_refs()
+		.iter()
+		.copied()
+		.filter(|id| {
+			let Some(instance) = tree.get_instance(*id) else {
+				return false;
+			};
+
+			let Some(meta) = tree.get_meta(*id) else {
+				return false;
+			};
+
+			refs::from_properties(&instance.properties, tree, *id)
+				.iter()
+				.any(|(property, path)| meta.refs.get(property) != Some(path))
+		})
+		.collect();
+
+	for id in stale {
+		let Some(properties) = tree.get_instance(id).map(|instance| instance.properties.clone()) else {
+			continue;
+		};
+
+		trace!("Refreshing references of {id:?}");
+
+		let mut snapshot = UpdatedSnapshot::new(id);
+		snapshot.properties = Some(properties);
+
+		apply_update(snapshot, tree, vfs)?;
+	}
+
+	Ok(())
+}
+
 pub fn apply_update(snapshot: UpdatedSnapshot, tree: &mut Tree, vfs: &Vfs) -> Result<()> {
 	trace!("Updating {:?}", snapshot.id);
 

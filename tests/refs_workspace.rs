@@ -368,3 +368,62 @@ fn references_of_an_addition_are_written_as_paths() {
 	assert_eq!(property(&tree, ship, "PrimaryPart"), Some(Variant::Ref(root)));
 	assert_eq!(property(&tree, trail, "Attachment0"), Some(Variant::Ref(root)));
 }
+
+#[test]
+fn renaming_a_target_rewrites_the_files_pointing_at_it() {
+	let workspace = Workspace::new();
+
+	workspace.write(
+		"src/Ship/init.meta.json",
+		r#"{ "className": "Model", "properties": { "PrimaryPart": ".Root" } }"#,
+	);
+	workspace.write("src/Ship/Root.model.json", r#"{ "ClassName": "Part" }"#);
+
+	let mut tree = workspace.tree();
+
+	let root = find(&tree, &["ReplicatedStorage", "Ship", "Root"]);
+
+	let mut rename = UpdatedSnapshot::new(root);
+	rename.name = Some("Base".to_owned());
+
+	let vfs = Vfs::new(false);
+
+	write::apply_update(rename, &mut tree, &vfs).unwrap();
+	write::refresh_refs(&mut tree, &vfs).unwrap();
+
+	let data = workspace.read("src/Ship/init.meta.json");
+	assert!(
+		data.contains(r#""PrimaryPart": ".Base""#),
+		"expected the path to follow the rename, got {data}"
+	);
+
+	// And the tree the files rebuild has to keep the very same link
+	let tree = workspace.tree();
+
+	let ship = find(&tree, &["ReplicatedStorage", "Ship"]);
+	let base = find(&tree, &["ReplicatedStorage", "Ship", "Base"]);
+
+	assert_eq!(property(&tree, ship, "PrimaryPart"), Some(Variant::Ref(base)));
+}
+
+#[test]
+fn a_path_nobody_could_resolve_is_left_alone() {
+	let workspace = Workspace::new();
+
+	workspace.write(
+		"src/Ship/init.meta.json",
+		r#"{ "className": "Model", "properties": { "PrimaryPart": ".Typo" } }"#,
+	);
+	workspace.write("src/Ship/Root.model.json", r#"{ "ClassName": "Part" }"#);
+
+	let mut tree = workspace.tree();
+	let vfs = Vfs::new(false);
+
+	write::refresh_refs(&mut tree, &vfs).unwrap();
+
+	let data = workspace.read("src/Ship/init.meta.json");
+	assert!(
+		data.contains(".Typo"),
+		"expected the path to be left for its author to fix, got {data}"
+	);
+}

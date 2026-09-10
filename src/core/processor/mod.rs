@@ -222,6 +222,10 @@ impl Handler {
 				write::apply_removal(id, &mut tree, &self.vfs)?;
 			}
 
+			// Renaming or moving an instance leaves every file that
+			// points at it holding a path that leads nowhere
+			write::refresh_refs(&mut tree, &self.vfs)?;
+
 			Ok(())
 		}();
 
