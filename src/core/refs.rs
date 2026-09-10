@@ -99,11 +99,9 @@ impl RefPath {
 		}
 
 		if from == target {
-			let name = tree.get_instance(from)?.name.clone();
-
 			return Some(Self::Relative {
 				up: 1,
-				down: vec![name],
+				down: vec![unambiguous_name(tree, from)?],
 			});
 		}
 
@@ -116,7 +114,7 @@ impl RefPath {
 		let down = target_ancestors
 			.iter()
 			.take_while(|id| **id != common)
-			.map(|id| tree.get_instance(*id).map(|instance| instance.name.clone()))
+			.map(|id| unambiguous_name(tree, *id))
 			.collect::<Option<Vec<String>>>()?
 			.into_iter()
 			.rev()
@@ -130,7 +128,7 @@ impl RefPath {
 		let mut names: Vec<String> = ancestors(tree, target)?
 			.iter()
 			.take_while(|id| **id != tree.root_ref())
-			.map(|id| tree.get_instance(*id).map(|instance| instance.name.clone()))
+			.map(|id| unambiguous_name(tree, *id))
 			.collect::<Option<Vec<String>>>()?;
 
 		if names.is_empty() {
@@ -166,12 +164,24 @@ impl RefPath {
 		};
 
 		for name in down {
-			current = tree
+			let mut matches = tree
 				.get_instance(current)?
 				.children()
 				.iter()
 				.copied()
-				.find(|child| tree.get_instance(*child).is_some_and(|child| child.name == *name))?;
+				.filter(|child| tree.get_instance(*child).is_some_and(|child| child.name == *name));
+
+			current = matches.next()?;
+
+			// Picking the first of several instances that all answer to the
+			// same name would quietly point the reference at the wrong one
+			if matches.next().is_some() {
+				warn!(
+					"Reference to {name} is ambiguous as more than one instance of that name exists. 					 Give the one that is meant an `id` and point at that instead"
+				);
+
+				return None;
+			}
 		}
 
 		Some(current)
@@ -206,6 +216,38 @@ impl Display for RefPath {
 
 		Ok(())
 	}
+}
+
+/// Returns the name of an instance, but only when no sibling of it answers
+/// to the same name
+///
+/// A shared name cannot be written into a path, as there would be no way of
+/// telling which of them was meant when reading it back. Instances like that
+/// have to be given an `id` to be referenced at all
+fn unambiguous_name(tree: &Tree, id: Ref) -> Option<String> {
+	let instance = tree.get_instance(id)?;
+	let name = instance.name.clone();
+
+	let siblings = tree
+		.get_instance(instance.parent())
+		.map(|parent| {
+			parent
+				.children()
+				.iter()
+				.filter(|child| tree.get_instance(**child).is_some_and(|child| child.name == name))
+				.count()
+		})
+		.unwrap_or(1);
+
+	if siblings > 1 {
+		warn!(
+			"Instance {name} shares its name with a sibling so it cannot be described by a path. 			 Give it an `id` to be able to reference it"
+		);
+
+		return None;
+	}
+
+	Some(name)
 }
 
 /// Lists the instance and all of its ancestors, ending with the root

@@ -425,3 +425,91 @@ mod unresolved_value {
 			.is_err());
 	}
 }
+
+// A file system cannot hold two siblings of the same name, but a Roblox tree
+// can, and Argon keeps them around when `keep_duplicates` is on. A path has no
+// way of telling those apart, so it must refuse rather than guess
+mod ambiguous_names {
+	use argon::core::{refs::RefPath, snapshot::Snapshot, tree::Tree};
+	use rbx_dom_weak::types::Ref;
+
+	fn tree_with_duplicates() -> (Tree, Ref, Ref, Vec<Ref>) {
+		let tree = Tree::new(Snapshot::new().with_class("Folder").with_children(vec![
+			Snapshot::new().with_class("Model").with_name("Rig").with_children(vec![
+				Snapshot::new().with_class("Part").with_name("Part"),
+				Snapshot::new().with_class("Part").with_name("Part"),
+				Snapshot::new().with_class("Part").with_name("Only"),
+			]),
+			Snapshot::new().with_class("ObjectValue").with_name("Link"),
+		]));
+
+		let root = tree.root_ref();
+		let rig = tree.get_instance(root).unwrap().children()[0];
+		let link = tree.get_instance(root).unwrap().children()[1];
+		let parts = tree.get_instance(rig).unwrap().children().to_vec();
+
+		(tree, rig, link, parts)
+	}
+
+	#[test]
+	fn refuses_to_describe_an_instance_with_a_duplicate_name() {
+		let (tree, _, link, parts) = tree_with_duplicates();
+
+		assert_eq!(
+			RefPath::between(&tree, link, parts[0]),
+			None,
+			"one of two instances named `Part` cannot be told apart by a path"
+		);
+		assert_eq!(RefPath::between(&tree, link, parts[1]), None);
+	}
+
+	#[test]
+	fn still_describes_an_instance_whose_name_is_its_own() {
+		let (tree, _, link, parts) = tree_with_duplicates();
+
+		let path = RefPath::between(&tree, link, parts[2]).expect("`Only` is the only one of its name");
+
+		assert_eq!(
+			path.resolve(&tree, link),
+			Some(parts[2]),
+			"an unambiguous name has to survive the round trip"
+		);
+	}
+
+	#[test]
+	fn refuses_to_resolve_a_path_that_more_than_one_instance_answers_to() {
+		let (tree, _, link, _) = tree_with_duplicates();
+
+		let path = RefPath::parse("^Rig.Part").expect("a written path is always readable");
+
+		assert_eq!(
+			path.resolve(&tree, link),
+			None,
+			"resolving to whichever came first would point at the wrong instance"
+		);
+	}
+
+	#[test]
+	fn an_id_still_works_where_a_name_cannot() {
+		let mut duplicate = Snapshot::new().with_class("Part").with_name("Part");
+		duplicate.meta.id = Some(String::from("the-one-i-meant"));
+
+		let tree = Tree::new(Snapshot::new().with_class("Folder").with_children(vec![
+				Snapshot::new()
+					.with_class("Model")
+					.with_name("Rig")
+					.with_children(vec![Snapshot::new().with_class("Part").with_name("Part"), duplicate]),
+				Snapshot::new().with_class("ObjectValue").with_name("Link"),
+			]));
+
+		let root = tree.root_ref();
+		let rig = tree.get_instance(root).unwrap().children()[0];
+		let link = tree.get_instance(root).unwrap().children()[1];
+		let target = tree.get_instance(rig).unwrap().children()[1];
+
+		let path = RefPath::between(&tree, link, target).expect("an id needs no name at all");
+
+		assert_eq!(path.to_string(), "#the-one-i-meant");
+		assert_eq!(path.resolve(&tree, link), Some(target));
+	}
+}
