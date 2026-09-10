@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- Support for properties that reference other instances, such as `Model.PrimaryPart`, `Beam.Attachment0` or `WeldConstraint.Part0`, which files store as the path of the instance they point at
+- Support for properties that reference other instances, such as `Model.PrimaryPart`, `Beam.Attachment0` or `WeldConstraint.Part0`, which files store as the path of the instance they point at, or as the `id` that instance gave itself
 
 ### Fixed
 

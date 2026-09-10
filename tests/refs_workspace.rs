@@ -427,3 +427,97 @@ fn a_path_nobody_could_resolve_is_left_alone() {
 		"expected the path to be left for its author to fix, got {data}"
 	);
 }
+
+#[test]
+fn reference_by_id_finds_the_instance_wherever_it_is() {
+	let workspace = Workspace::new();
+
+	workspace.write(
+		"src/Ship/init.meta.json",
+		r##"{ "className": "Model", "properties": { "PrimaryPart": "#hull" } }"##,
+	);
+	workspace.write(
+		"src/Ship/Root/init.meta.json",
+		r#"{ "className": "Part", "id": "hull" }"#,
+	);
+
+	let tree = workspace.tree();
+
+	let ship = find(&tree, &["ReplicatedStorage", "Ship"]);
+	let root = find(&tree, &["ReplicatedStorage", "Ship", "Root"]);
+
+	assert_eq!(property(&tree, ship, "PrimaryPart"), Some(Variant::Ref(root)));
+}
+
+#[test]
+fn an_id_is_preferred_over_a_path_when_writing() {
+	let workspace = Workspace::new();
+
+	workspace.write("src/Ship/init.meta.json", r#"{ "className": "Model" }"#);
+	workspace.write(
+		"src/Ship/Root/init.meta.json",
+		r#"{ "className": "Part", "id": "hull" }"#,
+	);
+
+	let mut tree = workspace.tree();
+
+	let ship = find(&tree, &["ReplicatedStorage", "Ship"]);
+	let root = find(&tree, &["ReplicatedStorage", "Ship", "Root"]);
+
+	let mut properties = Properties::default();
+	properties.insert(ustr("PrimaryPart"), Variant::Ref(root));
+
+	let mut update = UpdatedSnapshot::new(ship);
+	update.properties = Some(properties);
+
+	let vfs = Vfs::new(false);
+	write::apply_update(update, &mut tree, &vfs).unwrap();
+
+	let data = workspace.read("src/Ship/init.meta.json");
+	assert!(
+		data.contains(r##""PrimaryPart": "#hull""##),
+		"expected the id to be used, got {data}"
+	);
+}
+
+#[test]
+fn renaming_an_instance_with_an_id_leaves_the_files_alone() {
+	let workspace = Workspace::new();
+
+	workspace.write(
+		"src/Ship/init.meta.json",
+		r##"{ "className": "Model", "properties": { "PrimaryPart": "#hull" } }"##,
+	);
+	workspace.write(
+		"src/Ship/Root/init.meta.json",
+		r#"{ "className": "Part", "id": "hull" }"#,
+	);
+
+	let mut tree = workspace.tree();
+	let root = find(&tree, &["ReplicatedStorage", "Ship", "Root"]);
+
+	let mut rename = UpdatedSnapshot::new(root);
+	rename.name = Some("Base".to_owned());
+
+	let vfs = Vfs::new(false);
+
+	write::apply_update(rename, &mut tree, &vfs).unwrap();
+	write::refresh_refs(&mut tree, &vfs).unwrap();
+
+	let data = workspace.read("src/Ship/init.meta.json");
+	assert!(data.contains("#hull"), "expected the id to still be used, got {data}");
+
+	// The id has to survive being written back out, or the link dies
+	let base = workspace.read("src/Ship/Base/init.meta.json");
+	assert!(
+		base.contains(r#""id": "hull""#),
+		"expected the id to be kept, got {base}"
+	);
+
+	let tree = workspace.tree();
+
+	let ship = find(&tree, &["ReplicatedStorage", "Ship"]);
+	let base = find(&tree, &["ReplicatedStorage", "Ship", "Base"]);
+
+	assert_eq!(property(&tree, ship, "PrimaryPart"), Some(Variant::Ref(base)));
+}

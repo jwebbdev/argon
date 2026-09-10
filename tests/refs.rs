@@ -99,8 +99,56 @@ mod ref_path {
 	}
 
 	#[test]
+	fn id_round_trips() {
+		let path = RefPath::parse("#hull").unwrap();
+
+		assert_eq!(path, RefPath::Id("hull".into()));
+		assert_eq!(path.to_string(), "#hull");
+	}
+
+	#[test]
 	fn empty_path_points_at_nothing() {
 		assert_eq!(RefPath::parse(""), None);
+		assert_eq!(RefPath::parse("#"), None);
+	}
+
+	#[test]
+	fn id_resolves_wherever_the_instance_is() {
+		let mut tree = tree();
+		let root = find(&tree, &["Workspace", "Model", "Root"]);
+
+		let mut meta = tree.get_meta(root).unwrap().clone();
+		meta.set_id(Some("hull".into()));
+		tree.update_meta(root, meta);
+
+		let lighting = find(&tree, &["Lighting"]);
+		let path = RefPath::parse("#hull").unwrap();
+
+		assert_eq!(path.resolve(&tree, lighting), Some(root));
+	}
+
+	#[test]
+	fn an_id_is_preferred_over_a_path() {
+		let mut tree = tree();
+
+		let beam = find(&tree, &["Workspace", "Model", "Effects", "Beam"]);
+		let root = find(&tree, &["Workspace", "Model", "Root"]);
+
+		assert_eq!(RefPath::between(&tree, beam, root).unwrap().to_string(), "^^Root");
+
+		let mut meta = tree.get_meta(root).unwrap().clone();
+		meta.set_id(Some("hull".into()));
+		tree.update_meta(root, meta);
+
+		assert_eq!(RefPath::between(&tree, beam, root).unwrap().to_string(), "#hull");
+	}
+
+	#[test]
+	fn an_id_that_nothing_claims_points_at_nothing() {
+		let tree = tree();
+		let beam = find(&tree, &["Workspace", "Model", "Effects", "Beam"]);
+
+		assert_eq!(RefPath::parse("#hull").unwrap().resolve(&tree, beam), None);
 	}
 
 	#[test]

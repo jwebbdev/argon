@@ -15,6 +15,8 @@ use crate::Properties;
 const SEPARATOR: char = '.';
 /// Prefixes a [`RefPath`] with one hop towards the root of the tree
 const HOP: char = '^';
+/// Marks a [`RefPath`] as the id an instance gave itself
+const ID: char = '#';
 
 /// The location of an instance that another instance points at, kept
 /// as a path instead of a [`Ref`] because references have to survive
@@ -29,8 +31,14 @@ const HOP: char = '^';
 /// `Attachments.A0` inside of the grandparent of the instance that
 /// holds the reference. The ones that need no hop at all begin with a
 /// single `.` instead, the way `.Root` refers to a child named `Root`
+///
+/// An instance can also give itself a name for others to point at, by
+/// putting an `id` in its data file. `#root` refers to whichever
+/// instance calls itself `root`, no matter where it lives or what it
+/// is called, which is what makes it worth writing by hand
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RefPath {
+	Id(String),
 	Absolute(Vec<String>),
 	Relative { up: usize, down: Vec<String> },
 }
@@ -39,6 +47,14 @@ impl RefPath {
 	/// Reads a path back from its textual form, returning `None` if it
 	/// is empty and thus does not point at any instance at all
 	pub fn parse(path: &str) -> Option<Self> {
+		if let Some(id) = path.strip_prefix(ID) {
+			if id.is_empty() {
+				return None;
+			}
+
+			return Some(Self::Id(id.to_owned()));
+		}
+
 		let up = path.chars().take_while(|char| *char == HOP).count();
 
 		let (relative, rest) = if up > 0 {
@@ -72,6 +88,12 @@ impl RefPath {
 	/// live under, so that moving or renaming anything above it does
 	/// not turn the reference into a dangling one
 	pub fn between(tree: &Tree, from: Ref, target: Ref) -> Option<Self> {
+		// An id survives the instance being renamed or moved, so it is
+		// always the better way to describe where it is
+		if let Some(id) = tree.get_meta(target).and_then(|meta| meta.id.as_ref()) {
+			return Some(Self::Id(id.to_owned()));
+		}
+
 		if tree.get_instance(from).is_none() {
 			return Self::absolute(tree, target);
 		}
@@ -124,6 +146,7 @@ impl RefPath {
 	/// when the path is relative
 	pub fn resolve(&self, tree: &Tree, from: Ref) -> Option<Ref> {
 		let (mut current, down) = match self {
+			Self::Id(id) => return tree.get_by_ref_id(id),
 			Self::Absolute(down) => (tree.root_ref(), down),
 			Self::Relative { up, down } => {
 				let mut current = from;
@@ -158,6 +181,7 @@ impl RefPath {
 impl Display for RefPath {
 	fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
 		let (up, down) = match self {
+			Self::Id(id) => return write!(f, "{ID}{id}"),
 			Self::Absolute(down) => (0, down),
 			Self::Relative { up, down } => (*up, down),
 		};
@@ -308,12 +332,15 @@ pub fn from_snapshot(snapshot: &mut Snapshot, tree: &Tree) {
 				continue;
 			};
 
-			let path = match paths.get(target) {
-				Some(path) => Some(RefPath::Relative {
+			let id = tree.get_meta(*target).and_then(|meta| meta.id.as_ref());
+
+			let path = match (id, paths.get(target)) {
+				(Some(id), _) => Some(RefPath::Id(id.to_owned())),
+				(None, Some(path)) => Some(RefPath::Relative {
 					up: depth,
 					down: path.clone(),
 				}),
-				None => RefPath::between(tree, snapshot.id, *target),
+				(None, None) => RefPath::between(tree, snapshot.id, *target),
 			};
 
 			if let Some(path) = path {

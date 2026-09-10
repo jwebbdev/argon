@@ -24,6 +24,8 @@ use crate::{
 #[serde(rename_all = "camelCase")]
 struct Data {
 	class_name: Option<Ustr>,
+	/// Name that other instances can use to point at this one
+	id: Option<String>,
 
 	#[serde(default)]
 	properties: HashMap<Ustr, UnresolvedValue>,
@@ -41,6 +43,7 @@ struct Data {
 pub struct DataSnapshot {
 	pub path: PathBuf,
 	pub class: Option<Ustr>,
+	pub id: Option<String>,
 	pub properties: Properties,
 	pub refs: UstrMap<RefPath>,
 	pub keep_unknowns: Option<bool>,
@@ -125,6 +128,7 @@ pub fn read_data(path: &Path, class: Option<&str>, vfs: &Vfs) -> Result<DataSnap
 	Ok(DataSnapshot {
 		path: path.to_owned(),
 		class: data.class_name,
+		id: data.id,
 		properties,
 		refs,
 		keep_unknowns: data.keep_unknowns,
@@ -138,6 +142,8 @@ pub fn read_data(path: &Path, class: Option<&str>, vfs: &Vfs) -> Result<DataSnap
 struct WritableData {
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub class_name: Option<Ustr>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub id: Option<String>,
 	#[serde(skip_serializing_if = "BTreeMap::is_empty")]
 	pub properties: BTreeMap<Ustr, UnresolvedValue>,
 
@@ -177,6 +183,7 @@ pub fn write_data<'a>(
 
 	let mut data = WritableData {
 		class_name,
+		id: meta.id.clone(),
 		properties,
 		original_name: meta.original_name.clone(),
 		..WritableData::default()
@@ -220,6 +227,7 @@ pub fn write_original_name(path: &Path, meta: &Meta, vfs: &Vfs) -> Result<()> {
 
 		let data = WritableData {
 			class_name: data.class_name,
+			id: data.id,
 			properties: data.properties.into_iter().collect(),
 			keep_unknowns: data.keep_unknowns,
 			original_name: meta.original_name.clone(),

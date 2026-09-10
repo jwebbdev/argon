@@ -114,6 +114,10 @@ impl Snapshot {
 			self.meta.set_mesh_source(Some(mesh_source));
 		}
 
+		if data.id.is_some() {
+			self.meta.set_id(data.id);
+		}
+
 		self.meta.refs.extend(data.refs);
 
 		self.extend_properties(data.properties);
