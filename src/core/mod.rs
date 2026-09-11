@@ -23,6 +23,7 @@ pub mod helpers;
 pub mod meta;
 pub mod processor;
 pub mod queue;
+pub mod refs;
 pub mod snapshot;
 pub mod tree;
 
@@ -56,7 +57,11 @@ impl Core {
 		trace!("Building Tree and Queue");
 
 		let vfs = Arc::new(vfs);
-		let tree = Arc::new(Mutex::new(Tree::new(snapshot)));
+
+		let mut tree = Tree::new(snapshot);
+		refs::resolve_all(&mut tree);
+
+		let tree = Arc::new(Mutex::new(tree));
 		let queue = Arc::new(Queue::new());
 
 		trace!("Starting Processor");

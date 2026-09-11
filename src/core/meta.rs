@@ -1,9 +1,11 @@
+use rbx_dom_weak::UstrMap;
 use serde::{Deserialize, Serialize};
 use std::{
 	fmt::Display,
 	path::{Path, PathBuf},
 };
 
+use super::refs::RefPath;
 use crate::{
 	config::Config,
 	constants::default_sync_rules,
@@ -488,6 +490,14 @@ pub struct Meta {
 	pub original_name: Option<String>,
 	/// Custom Mesh Part source path
 	pub mesh_source: Option<String>,
+	/// Name that other instances can use to point at this one, which
+	/// unlike a path survives the instance being renamed or moved
+	#[serde(skip)]
+	pub id: Option<String>,
+	/// Instances that properties of this one point at, kept as paths
+	/// because they get resolved once the whole tree is available
+	#[serde(skip)]
+	pub refs: UstrMap<RefPath>,
 }
 
 impl Meta {
@@ -500,6 +510,8 @@ impl Meta {
 			keep_unknowns: false,
 			original_name: None,
 			mesh_source: None,
+			id: None,
+			refs: UstrMap::default(),
 		}
 	}
 
@@ -553,6 +565,16 @@ impl Meta {
 		self
 	}
 
+	pub fn with_id(mut self, id: Option<String>) -> Self {
+		self.id = id;
+		self
+	}
+
+	pub fn with_refs(mut self, refs: UstrMap<RefPath>) -> Self {
+		self.refs = refs;
+		self
+	}
+
 	// Overwriting meta fields
 
 	pub fn set_source<S: Into<Source>>(&mut self, source: S) {
@@ -573,5 +595,13 @@ impl Meta {
 
 	pub fn set_mesh_source(&mut self, mesh_source: Option<String>) {
 		self.mesh_source = mesh_source;
+	}
+
+	pub fn set_id(&mut self, id: Option<String>) {
+		self.id = id;
+	}
+
+	pub fn set_refs(&mut self, refs: UstrMap<RefPath>) {
+		self.refs = refs;
 	}
 }

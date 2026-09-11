@@ -14,6 +14,9 @@ struct JsonModel {
 	name: Option<String>,
 	#[serde(alias = "ClassName")]
 	class_name: Option<Ustr>,
+	/// Name that this instance gives itself for others to point at
+	#[serde(alias = "Id")]
+	id: Option<String>,
 
 	#[serde(alias = "Properties")]
 	properties: Option<UstrMap<UnresolvedValue>>,
@@ -56,6 +59,14 @@ fn walk(model: JsonModel, path: &Path) -> Result<Snapshot> {
 	// Resolve properties
 	if let Some(model_properties) = model.properties {
 		for (property, value) in model_properties {
+			// References point at an instance that often lives in another
+			// file, so they are kept as paths and resolved once the whole
+			// tree is available
+			if let Some(path) = value.to_ref_path(&class, &property) {
+				snapshot.meta.refs.insert(property, path);
+				continue;
+			}
+
 			match value.resolve(&class, &property) {
 				Ok(value) => {
 					properties.insert(property, value);
@@ -89,6 +100,7 @@ fn walk(model: JsonModel, path: &Path) -> Result<Snapshot> {
 	}
 
 	snapshot.set_properties(properties);
+	snapshot.meta.set_id(model.id);
 
 	// Append children
 	for child in model.children.unwrap_or_default() {

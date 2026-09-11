@@ -9,6 +9,7 @@ use crate::{
 	core::{
 		helpers::syncback::{rename_path, serialize_properties, validate_properties, verify_name, verify_path},
 		meta::{Meta, NodePath, Source, SourceEntry, SourceKind},
+		refs,
 		snapshot::{AddedSnapshot, Snapshot, UpdatedSnapshot},
 		tree::Tree,
 	},
@@ -58,6 +59,10 @@ pub fn apply_addition(snapshot: AddedSnapshot, tree: &mut Tree, vfs: &Vfs) -> Re
 
 	snapshot.properties = validate_properties(snapshot.properties, filter);
 
+	// Instances that point at each other arrive together, so their paths
+	// are worked out before any of them has been written
+	refs::from_snapshot(&mut snapshot, tree);
+
 	fn locate_instance_data(is_dir: bool, path: &Path, snapshot: &Snapshot, parent_meta: &Meta) -> Result<PathBuf> {
 		parent_meta
 			.context
@@ -76,7 +81,7 @@ pub fn apply_addition(snapshot: AddedSnapshot, tree: &mut Tree, vfs: &Vfs) -> Re
 	) -> Result<Option<Meta>> {
 		let mut meta = snapshot.meta.clone().with_context(&parent_meta.context);
 		let filter = parent_meta.context.syncback_filter();
-		let mut properties = snapshot.properties.clone();
+		let mut properties = refs::to_paths(snapshot.properties.clone(), &snapshot.meta.refs);
 
 		if let Some(middleware) = Middleware::from_class(
 			&snapshot.class,
@@ -263,7 +268,10 @@ pub fn apply_addition(snapshot: AddedSnapshot, tree: &mut Tree, vfs: &Vfs) -> Re
 	) {
 		let mut node = ProjectNode {
 			class_name: Some(snapshot.class),
-			properties: serialize_properties(&snapshot.class, snapshot.properties.clone()),
+			properties: serialize_properties(
+				&snapshot.class,
+				refs::to_paths(snapshot.properties.clone(), &snapshot.meta.refs),
+			),
 			..ProjectNode::default()
 		};
 
@@ -332,6 +340,50 @@ pub fn apply_addition(snapshot: AddedSnapshot, tree: &mut Tree, vfs: &Vfs) -> Re
 	Ok(())
 }
 
+/// Rewrites the files of every instance whose reference is described
+/// by a path that no longer leads to the instance it points at
+///
+/// References survive on disk as the path of their target, so renaming
+/// or moving an instance leaves every file pointing at it holding a
+/// path that leads nowhere. Paths that could not be resolved in the
+/// first place are left alone, as they are the ones a person wrote by
+/// hand and got wrong, which is theirs to fix
+pub fn refresh_refs(tree: &mut Tree, vfs: &Vfs) -> Result<()> {
+	let stale: Vec<Ref> = tree
+		.ids_with_refs()
+		.iter()
+		.copied()
+		.filter(|id| {
+			let Some(instance) = tree.get_instance(*id) else {
+				return false;
+			};
+
+			let Some(meta) = tree.get_meta(*id) else {
+				return false;
+			};
+
+			refs::from_properties(&instance.properties, tree, *id)
+				.iter()
+				.any(|(property, path)| meta.refs.get(property) != Some(path))
+		})
+		.collect();
+
+	for id in stale {
+		let Some(properties) = tree.get_instance(id).map(|instance| instance.properties.clone()) else {
+			continue;
+		};
+
+		trace!("Refreshing references of {id:?}");
+
+		let mut snapshot = UpdatedSnapshot::new(id);
+		snapshot.properties = Some(properties);
+
+		apply_update(snapshot, tree, vfs)?;
+	}
+
+	Ok(())
+}
+
 pub fn apply_update(snapshot: UpdatedSnapshot, tree: &mut Tree, vfs: &Vfs) -> Result<()> {
 	trace!("Updating {:?}", snapshot.id);
 
@@ -358,6 +410,13 @@ pub fn apply_update(snapshot: UpdatedSnapshot, tree: &mut Tree, vfs: &Vfs) -> Re
 	}
 
 	let mut meta = tree.get_meta(snapshot.id).unwrap().clone();
+
+	// The client sends every property of an instance at once, so the
+	// references it no longer holds are the ones that are missing here
+	if let Some(properties) = &snapshot.properties {
+		meta.set_refs(refs::from_properties(properties, tree, snapshot.id));
+	}
+
 	let instance = tree.get_instance_mut(snapshot.id).unwrap();
 
 	fn locate_instance_data(name: &str, path: &Path, meta: &Meta, vfs: &Vfs) -> Option<PathBuf> {
@@ -435,7 +494,7 @@ pub fn apply_update(snapshot: UpdatedSnapshot, tree: &mut Tree, vfs: &Vfs) -> Re
 			};
 
 			if let Some(file_path) = file_path {
-				let properties = middleware.write(properties.clone(), &file_path, vfs)?;
+				let properties = middleware.write(refs::to_paths(properties.clone(), &meta.refs), &file_path, vfs)?;
 
 				if let Some(data_path) = locate_instance_data(&instance.name, path, meta, vfs) {
 					if filter.matches_path(&data_path) {
@@ -452,7 +511,14 @@ pub fn apply_update(snapshot: UpdatedSnapshot, tree: &mut Tree, vfs: &Vfs) -> Re
 			if filter.matches_path(&data_path) {
 				filter_warn!(instance.referent(), &data_path);
 			} else {
-				let data_path = data::write_data(false, &instance.class, properties.clone(), &data_path, meta, vfs)?;
+				let data_path = data::write_data(
+					false,
+					&instance.class,
+					refs::to_paths(properties.clone(), &meta.refs),
+					&data_path,
+					meta,
+					vfs,
+				)?;
 				meta.source.set_data(data_path)
 			}
 		}
@@ -572,7 +638,7 @@ pub fn apply_update(snapshot: UpdatedSnapshot, tree: &mut Tree, vfs: &Vfs) -> Re
 					let class = node.class_name.unwrap_or(Ustr::from(&name));
 					let properties = validate_properties(properties, meta.context.syncback_filter());
 
-					node.properties = serialize_properties(&class, properties.clone());
+					node.properties = serialize_properties(&class, refs::to_paths(properties.clone(), &meta.refs));
 					node.tags = Vec::new();
 					node.keep_unknowns = None;
 

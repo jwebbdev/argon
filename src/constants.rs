@@ -22,9 +22,9 @@ pub const MAX_PAYLOAD_SIZE: usize = 536_870_912;
 /// the client request and sending back an empty `Changes`
 pub const QUEUE_TIMEOUT: Duration = Duration::from_secs(60);
 
-// VFS events will be ignored for this amount of time
-// after the last change that has been made by the client,
-// this saves a lot of computing time
+// VFS events for a given path will be ignored for this amount
+// of time after Argon itself has written to that path, as they
+// are just echoes of changes the client already knows about
 pub const SYNCBACK_DEBOUNCE_TIME: Duration = Duration::from_millis(300);
 
 // Set of default sync rules that is used to determine

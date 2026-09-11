@@ -1,6 +1,9 @@
 use anyhow::Result;
 use log::error;
-use rbx_dom_weak::{types::Tags, ustr, HashMapExt, Ustr, UstrMap};
+use rbx_dom_weak::{
+	types::{Tags, Variant},
+	ustr, HashMapExt, Ustr, UstrMap,
+};
 use serde::{Deserialize, Serialize};
 use std::{
 	collections::{BTreeMap, HashMap},
@@ -8,7 +11,7 @@ use std::{
 };
 
 use crate::{
-	core::meta::Meta,
+	core::{meta::Meta, refs::RefPath},
 	ext::PathExt,
 	middleware::helpers,
 	resolution::UnresolvedValue,
@@ -21,6 +24,8 @@ use crate::{
 #[serde(rename_all = "camelCase")]
 struct Data {
 	class_name: Option<Ustr>,
+	/// Name that other instances can use to point at this one
+	id: Option<String>,
 
 	#[serde(default)]
 	properties: HashMap<Ustr, UnresolvedValue>,
@@ -38,7 +43,9 @@ struct Data {
 pub struct DataSnapshot {
 	pub path: PathBuf,
 	pub class: Option<Ustr>,
+	pub id: Option<String>,
 	pub properties: Properties,
+	pub refs: UstrMap<RefPath>,
 	pub keep_unknowns: Option<bool>,
 	pub original_name: Option<String>,
 	pub mesh_source: Option<String>,
@@ -55,6 +62,7 @@ pub fn read_data(path: &Path, class: Option<&str>, vfs: &Vfs) -> Result<DataSnap
 	let data: Data = serde_json::from_str(&data)?;
 
 	let mut properties = UstrMap::new();
+	let mut refs = UstrMap::new();
 
 	let class = if let Some(class) = class.or(data.class_name.as_deref()) {
 		class.to_owned()
@@ -76,6 +84,14 @@ pub fn read_data(path: &Path, class: Option<&str>, vfs: &Vfs) -> Result<DataSnap
 
 	// Resolve properties
 	for (property, value) in data.properties {
+		// References point at an instance that often lives in another
+		// file, so they are kept as paths and resolved once the whole
+		// tree is available
+		if let Some(path) = value.to_ref_path(&class, &property) {
+			refs.insert(property, path);
+			continue;
+		}
+
 		match value.resolve(&class, &property) {
 			Ok(value) => {
 				properties.insert(property, value);
@@ -112,7 +128,9 @@ pub fn read_data(path: &Path, class: Option<&str>, vfs: &Vfs) -> Result<DataSnap
 	Ok(DataSnapshot {
 		path: path.to_owned(),
 		class: data.class_name,
+		id: data.id,
 		properties,
+		refs,
 		keep_unknowns: data.keep_unknowns,
 		original_name: data.original_name,
 		mesh_source,
@@ -124,6 +142,8 @@ pub fn read_data(path: &Path, class: Option<&str>, vfs: &Vfs) -> Result<DataSnap
 struct WritableData {
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub class_name: Option<Ustr>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub id: Option<String>,
 	#[serde(skip_serializing_if = "BTreeMap::is_empty")]
 	pub properties: BTreeMap<Ustr, UnresolvedValue>,
 
@@ -150,6 +170,9 @@ pub fn write_data<'a>(
 
 	let properties = properties
 		.iter()
+		// References that `core::refs::to_paths` could not describe are
+		// dropped, as a raw referent would mean nothing in another session
+		.filter(|(_, variant)| !matches!(variant, Variant::Ref(_)))
 		.map(|(property, variant)| {
 			(
 				*property,
@@ -160,6 +183,7 @@ pub fn write_data<'a>(
 
 	let mut data = WritableData {
 		class_name,
+		id: meta.id.clone(),
 		properties,
 		original_name: meta.original_name.clone(),
 		..WritableData::default()
@@ -203,6 +227,7 @@ pub fn write_original_name(path: &Path, meta: &Meta, vfs: &Vfs) -> Result<()> {
 
 		let data = WritableData {
 			class_name: data.class_name,
+			id: data.id,
 			properties: data.properties.into_iter().collect(),
 			keep_unknowns: data.keep_unknowns,
 			original_name: meta.original_name.clone(),

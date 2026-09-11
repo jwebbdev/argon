@@ -1,8 +1,8 @@
-use log::error;
+use log::{error, warn};
 use multimap::MultiMap;
 use rbx_dom_weak::{types::Ref, Instance, InstanceBuilder, WeakDom};
 use std::{
-	collections::HashMap,
+	collections::{HashMap, HashSet},
 	path::{Path, PathBuf},
 };
 
@@ -13,6 +13,11 @@ pub struct Tree {
 	dom: WeakDom,
 	path_to_ids: MultiMap<PathBuf, Ref>,
 	id_to_meta: HashMap<Ref, Meta>,
+	// Instances whose meta holds at least one reference path, so that
+	// resolving them does not have to walk the entire tree every time
+	ids_with_refs: HashSet<Ref>,
+	// Names that instances gave themselves for others to point at
+	ref_ids: HashMap<String, Ref>,
 }
 
 impl Tree {
@@ -25,6 +30,8 @@ impl Tree {
 			dom: WeakDom::new(builder),
 			id_to_meta: HashMap::new(),
 			path_to_ids: MultiMap::new(),
+			ids_with_refs: HashSet::new(),
+			ref_ids: HashMap::new(),
 		};
 
 		let root_ref = tree.dom.root_ref();
@@ -116,6 +123,8 @@ impl Tree {
 			self.path_to_ids.insert(path.to_owned(), id);
 		}
 
+		self.track_refs(id, &meta);
+
 		self.id_to_meta.insert(id, meta)
 	}
 
@@ -146,6 +155,7 @@ impl Tree {
 			}
 		}
 
+		self.track_refs(id, &meta);
 		self.id_to_meta.insert(id, meta);
 
 		old_meta
@@ -160,7 +170,48 @@ impl Tree {
 			}
 		}
 
+		self.ids_with_refs.remove(&id);
+
+		if let Some(ref_id) = meta.as_ref().and_then(|meta| meta.id.as_ref()) {
+			self.ref_ids.remove(ref_id);
+		}
+
 		meta
+	}
+
+	fn track_refs(&mut self, id: Ref, meta: &Meta) {
+		if meta.refs.is_empty() {
+			self.ids_with_refs.remove(&id);
+		} else {
+			self.ids_with_refs.insert(id);
+		}
+
+		if let Some(old_meta) = self.id_to_meta.get(&id) {
+			if let Some(ref_id) = &old_meta.id {
+				if old_meta.id != meta.id {
+					self.ref_ids.remove(ref_id);
+				}
+			}
+		}
+
+		if let Some(ref_id) = &meta.id {
+			if let Some(taken) = self.ref_ids.get(ref_id) {
+				if *taken != id {
+					warn!("Instances {taken:?} and {id:?} both go by the id {ref_id}");
+				}
+			}
+
+			self.ref_ids.insert(ref_id.to_owned(), id);
+		}
+	}
+
+	pub fn ids_with_refs(&self) -> &HashSet<Ref> {
+		&self.ids_with_refs
+	}
+
+	/// Looks up the instance that gave itself the given id
+	pub fn get_by_ref_id(&self, ref_id: &str) -> Option<Ref> {
+		self.ref_ids.get(ref_id).copied()
 	}
 
 	pub fn get_meta(&self, id: Ref) -> Option<&Meta> {
