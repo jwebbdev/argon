@@ -1,4 +1,6 @@
 use log::warn;
+
+use crate::argon_warn;
 use rbx_dom_weak::{
 	types::{Ref, Variant},
 	AHashMap, UstrMap,
@@ -250,6 +252,17 @@ fn unambiguous_name(tree: &Tree, id: Ref) -> Option<String> {
 	Some(name)
 }
 
+/// Names an instance the way a user would recognise it, for messages they have to act on
+fn describe(tree: &Tree, id: Ref) -> String {
+	match tree.get_instance(id) {
+		Some(instance) => match RefPath::absolute(tree, id) {
+			Some(path) => format!("{} ({})", instance.name, path),
+			None => instance.name.clone(),
+		},
+		None => format!("{id:?}"),
+	}
+}
+
 /// Lists the instance and all of its ancestors, ending with the root
 fn ancestors(tree: &Tree, id: Ref) -> Option<Vec<Ref>> {
 	let root = tree.root_ref();
@@ -293,7 +306,17 @@ pub fn resolve_all(tree: &mut Tree) -> Vec<UpdatedSnapshot> {
 
 		for (property, path) in &refs {
 			let Some(target) = path.resolve(tree, id) else {
-				warn!("Failed to resolve reference {path} of {property} property, instance: {id:?}");
+				// ⛔ THIS HAS TO REACH THE USER. An unresolved reference is an instance that arrives
+				// in Studio unwired and renders nothing, silently -- the exact failure this whole
+				// mechanism exists to end, and a mistyped path is the likeliest way to land in it.
+				// `log::warn!` is filtered out at default verbosity, so it would only be seen by
+				// someone already running `-vv` to debug the problem it is trying to announce.
+				argon_warn!(
+					"{} of {} references {}, which does not exist. The property is left unset",
+					property,
+					describe(tree, id),
+					path
+				);
 				continue;
 			};
 
