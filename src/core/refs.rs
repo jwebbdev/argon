@@ -379,7 +379,22 @@ pub fn to_paths(properties: Properties, refs: &UstrMap<RefPath>) -> Properties {
 /// point at each other with are not part of the tree yet
 pub fn from_snapshot(snapshot: &mut Snapshot, tree: &Tree) {
 	fn collect(snapshot: &Snapshot, path: Vec<String>, paths: &mut AHashMap<Ref, Vec<String>>) {
+		// A path tells instances apart by name, so two siblings that share one are both
+		// described by the SAME path and there is no way to say which was meant. Leaving them
+		// out here is what sends them to `RefPath::between`, which refuses and says why --
+		// otherwise the reference silently comes back pointing at whichever the reader finds
+		// first, which for a copy-pasted or Ctrl+D'd instance is a coin toss
+		let mut taken: AHashMap<&str, usize> = AHashMap::default();
+
 		for child in &snapshot.children {
+			*taken.entry(child.name.as_str()).or_insert(0) += 1;
+		}
+
+		for child in &snapshot.children {
+			if taken.get(child.name.as_str()).copied().unwrap_or(0) > 1 {
+				continue;
+			}
+
 			let mut child_path = path.clone();
 			child_path.push(child.name.clone());
 
@@ -436,9 +451,27 @@ pub fn from_properties(properties: &Properties, tree: &Tree, id: Ref) -> UstrMap
 			continue;
 		};
 
-		if let Some(path) = RefPath::between(tree, id, *target) {
-			refs.insert(*property, path);
+		let Some(path) = RefPath::between(tree, id, *target) else {
+			continue;
+		};
+
+		// ⛔ A PATH IS ONLY WORTH WRITING IF IT COMES BACK. Describing an instance and resolving
+		// that description are separate pieces of code walking separate structures, and anything
+		// that makes them disagree -- a duplicate name, an instance that never reached disk --
+		// produces a reference that silently points somewhere else on the next read. Cheaper to
+		// check it here than to let a Beam come back wired to the wrong attachment
+		if path.resolve(tree, id) != Some(*target) {
+			argon_warn!(
+				"{} of {} could not be described in a way that survives being read back, so it is \
+				 not saved. Give the instance it points at an `id` to reference it unambiguously",
+				property,
+				describe(tree, id)
+			);
+
+			continue;
 		}
+
+		refs.insert(*property, path);
 	}
 
 	refs

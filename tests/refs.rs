@@ -565,3 +565,106 @@ mod ids_in_every_file {
 		assert_eq!(data.id.as_deref(), Some("rig-root"));
 	}
 }
+
+// Found in a live Studio session, not by reading code: a Beam pointing at the second of two
+// same-named Attachments came back wired to the FIRST one after a round trip
+mod ambiguous_syncback {
+	use argon::{
+		core::{
+			refs::{from_properties, from_snapshot},
+			snapshot::Snapshot,
+			tree::Tree,
+		},
+		Properties,
+	};
+	use rbx_dom_weak::{
+		types::{Ref, Variant},
+		ustr, HashMapExt, UstrMap,
+	};
+
+	fn attachment(name: &str) -> Snapshot {
+		Snapshot::new().with_class("Attachment").with_name(name)
+	}
+
+	#[test]
+	fn refuses_to_save_a_reference_to_one_of_two_same_named_siblings() {
+		let tree = Tree::new(Snapshot::new().with_class("Folder").with_children(vec![
+			Snapshot::new().with_class("Part").with_name("Root").with_children(vec![
+				attachment("Twin"),
+				attachment("Twin"),
+				Snapshot::new().with_class("Beam").with_name("Link"),
+			]),
+		]));
+
+		let root = tree.get_instance(tree.root_ref()).unwrap().children()[0];
+		let children = tree.get_instance(root).unwrap().children().to_vec();
+		let second_twin = children[1];
+		let beam = children[2];
+
+		let mut properties: Properties = UstrMap::new();
+		properties.insert(ustr("Attachment0"), Variant::Ref(second_twin));
+
+		let refs = from_properties(&properties, &tree, beam);
+
+		assert!(
+			refs.is_empty(),
+			"a reference that cannot be described unambiguously must not be written at all, \
+			 got {refs:?}"
+		);
+	}
+
+	#[test]
+	fn still_saves_a_reference_whose_target_is_the_only_one_of_its_name() {
+		let tree = Tree::new(Snapshot::new().with_class("Folder").with_children(vec![
+			Snapshot::new().with_class("Part").with_name("Root").with_children(vec![
+				attachment("Only"),
+				Snapshot::new().with_class("Beam").with_name("Link"),
+			]),
+		]));
+
+		let root = tree.get_instance(tree.root_ref()).unwrap().children()[0];
+		let children = tree.get_instance(root).unwrap().children().to_vec();
+
+		let mut properties: Properties = UstrMap::new();
+		properties.insert(ustr("Attachment0"), Variant::Ref(children[0]));
+
+		let refs = from_properties(&properties, &tree, children[1]);
+
+		assert_eq!(refs.len(), 1, "an unambiguous name still has to round trip");
+		assert_eq!(
+			refs.get(&ustr("Attachment0")).map(ToString::to_string),
+			Some(String::from("^Only"))
+		);
+	}
+
+	#[test]
+	fn a_new_subtree_does_not_hand_out_a_path_two_siblings_answer_to() {
+		// `from_snapshot` describes instances that are not in the tree yet, from the snapshot's own
+		// shape. Two siblings of one name produce the SAME path there, which is how the live
+		// session ended up with a reference to the wrong attachment
+		let tree = Tree::new(Snapshot::new().with_class("Folder"));
+
+		let mut beam = Snapshot::new().with_class("Beam").with_name("Link");
+		let twin_a = attachment("Twin").with_id(Ref::new());
+		let twin_b = attachment("Twin").with_id(Ref::new());
+
+		let mut properties: Properties = UstrMap::new();
+		properties.insert(ustr("Attachment0"), Variant::Ref(twin_b.id));
+		beam = beam.with_properties(properties);
+
+		let mut root = Snapshot::new()
+			.with_class("Part")
+			.with_name("Root")
+			.with_children(vec![twin_a, twin_b, beam]);
+
+		from_snapshot(&mut root, &tree);
+
+		let link = root.children.iter().find(|c| c.name == "Link").unwrap();
+
+		assert!(
+			link.meta.refs.is_empty(),
+			"an ambiguous sibling name must not become a saved path, got {:?}",
+			link.meta.refs
+		);
+	}
+}
